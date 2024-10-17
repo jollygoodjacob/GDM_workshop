@@ -1,0 +1,545 @@
+---
+title: "gdm Package Demo - Part 2"
+author: "Jacob Nesslage (Modified from Mokany et al 2022)"
+date: "8/6/2023"
+output: html_document
+---
+
+```{r}
+#Install.packages("moments")
+library(gdm)
+library(moments)
+```
+
+## 2.1 Model Evaluation - Summary statistics and deviance
+
+```{r}
+gdmExpData <- southwest
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+gdm.1 <- gdm(sitePairTab,geo=T)
+
+summary(gdm.1)
+plot(gdm.1)
+```
+
+
+## 2.2 Model Evaluation - Variable Importance
+
+We often want to know about variable importance. We can take advantage of the matrix regression formulation of GDM to obtain these variable importances AND reduce the number of variables in our model by removing extraneous data.
+
+Here is some information on the fuction itself.
+
+```{r}
+?gdm::gdm.varImp
+```
+
+Let's apply the function to some data.
+
+```{r}
+# reads in example input data
+gdmExpData <- southwest
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+varimp <- gdm.varImp(sitePairTab,geo=T, nPerm=50, parallel=T, cores=4, predSelect=T)
+
+model_deviance <- varimp$`Model assessment`
+
+barplot(sort(varimp$`Predictor Importance`[,1], decreasing=T),ylab="Percent decrease in deviance",cex.names=0.5)
+
+```
+
+
+## 2.3 Model evaluation - Geographic and environmental partitioning
+
+We can partition our data to determine the percent contribution of deviance explained attributed to certain classes of predictors, which we assign. This gives us additional flexibility in determining the drivers of beta diversity in our models.
+
+```{r}
+?gdm::gdm.partition.deviance()
+```
+
+Let's apply it!
+
+```{r}
+# reads in example input data
+gdmExpData <- southwest
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+
+varSet <- vector("list", 2)
+# two groups (soils & climate)
+names(varSet) <- c("soil", "climate")
+
+# lastly, add variable names for
+varSet$soil <- c("awcA", "phTotal", "sandA", "shcA", "solumDepth")
+varSet$climate <- c("bio5", "bio6", "bio15", "bio18", "bio19")
+varSet
+
+gdm.partition.deviance(sitePairTab,varSets=varSet)
+```
+
+## 2.4 Model evaluation - Cross validation
+
+We can use cross validation to get a sense of which dissimilarity values have higher RMSE than others, which can elucidate areas where our model underperforms.
+
+```{r}
+?gdm::gdm.crossvalidation()
+```
+
+We can apply the function here:
+
+```{r}
+gdm.crossvalidation(sitePairTab,train.proportion=0.9, n.crossvalid.tests=10,
+geo=T, splines=NULL, knots=NULL)
+```
+
+In this case, we see higher RMSE values in the range of d=0.475-0.575. We also can note that there is no data in the lower range of dissimilarity values, which lets us know that the model is not trained to predict low dissimilarity with any degree of certainty.
+
+## 2.5 Transforming predictor variables can influence model performance
+
+This example demonstrates the potential for improved model performance through transforming highly
+skewed predictor data.
+
+```{r}
+# Load libraries
+library(moments) # to calculate skewness
+# Set up site-pair table, environmental tabular data
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+# Using the data from the gdm package, we will demonstrate the effect of transforming a
+# predictor (phTotal), when applying the default model fitting settings
+# First create an environment table with just the 'phTotal' variable
+envTab <- gdmExpData[c(2,4)]
+
+```
+
+```{r}
+# then create several alternative transformations of this variable
+envTab$phTotal_cube <- envTab$phTotal^3
+envTab$phTotal_cuberoot <- envTab$phTotal^(1/3)
+envTab$phTotal_log10 <- log10(envTab$phTotal)
+envTab$phTotal_scale <- scale(envTab$phTotal, center = TRUE, scale = TRUE)
+envTab$phTotal_exp <- exp(envTab$phTotal/100)
+# Have a look at how these transformations have changed the distribution of values
+par(mfrow=c(3,2))
+hist(envTab$phTotal, main = "Untransformed")
+hist(envTab$phTotal_cube, main = "Cubed")
+hist(envTab$phTotal_cuberoot, main = "Cube-root")
+hist(envTab$phTotal_log10, main = "Log10")
+hist(envTab$phTotal_scale, main = "Scaled")
+hist(envTab$phTotal_exp, main = "Exponential")
+```
+
+
+Now compare the performance of GDMs fit using these different distributions of the predictor variable.
+
+```{r}
+# Fit GDMs to each data distribution
+variable.name <- colnames(envTab)[2:7]
+variable.skewness <- c()
+deviance.explained <- c()
+for(i.var in 2:7)
+{
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab[,c(1,i.var)])
+gdmTabMod <- gdm(data=sitePairTab,
+geo=FALSE)
+deviance.explained <- c(deviance.explained, gdmTabMod$explained)
+variable.skewness <- c(variable.skewness, skewness(envTab[,i.var]))
+}# end for i.var
+# And lets see how model performance changes with the skewness of the variable
+par(mfrow=c(1,1))
+plot(variable.skewness, deviance.explained)
+```
+
+This example suggests that reducing the skewness of the predictor data in GDM will improve
+model performance, at least when using the default number of splines and position of knots
+
+## 3.2 Sub-sampling site-pairs can influence model performance
+This example demonstrates the implications of subsampling site-pairs on model performance, both in terms
+of deviance explained in the training data, and mean absolute error for independent cross-validation data.
+
+```{r}
+library(gdm)
+# load example data
+gdmExpData <- southwest
+# Set up site-pair table, environmental tabular data
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+asp <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab,
+sampleSites = 1) # use all (100%) data
+# using all sites returns 4371 site pairs
+dim(asp)
+```
+
+```{r}
+# set up and run subsampling of site-pair table
+
+subSamps <- replicate(99, c(seq(0.05, 0.25, by=0.025), seq(0.3, 0.95, by=0.15)))
+subSampGDMs <- apply(subSamps, c(1,2), function(x){
+  # spt for modeling TRAINING
+  sitePairTab.train <- formatsitepair(bioData=sppData,
+  bioFormat=2,
+  XColumn="Long",
+  YColumn="Lat",
+  sppColumn="species",
+  siteColumn="site",
+  predData=envTab,
+  sampleSites = x)
+  # spt for model EVALUATION
+  # start with full spt, then subsample by removing rows
+  # that are already in the training spt
+  sitePairTab.test <- formatsitepair(bioData=sppData,
+  bioFormat=2,
+  XColumn="Long",
+  YColumn="Lat",
+  sppColumn="species",
+  siteColumn="site",
+  predData=envTab,
+  sampleSites = 1)
+  # spt for model EVALUATION
+  # remove rows that are in the training spt
+  sitePairTab.test <- sitePairTab.test[which((rownames(sitePairTab.test) %in%
+  rownames(sitePairTab.train))==FALSE),]
+  # model fit to TRAINING spt
+  modTrain <- gdm(sitePairTab.train)
+  # predict model to EVALUATION data
+  predTest <- predict(modTrain, sitePairTab.test)
+  # mean absolute error (mae)
+  mae <- mean(abs(sitePairTab.test$distance - predTest))
+  return(c(modTrain$explained, mae))
+})
+```
+
+```{r,echo=FALSE, out.width = '90%'}
+knitr::include_graphics("C:/Users/jacob/Box/GDM_workshop/analysis_subsample.png")
+```
+
+This example above shows that while models appear to perform better in terms of deviance explained in the
+training data as fewer site-pairs are used, independent tests of model accuracy show increasing error as fewer site-pairs are used.
+
+## 2.6 Including a higher proportion of low dissimilarity site-pairs can influence model performance
+This example explores the implications of subsampling site-pairs for use in a GDM based on the spatial
+distance between site-pairs. This approach assumes site-pairs that are closer together with have lower
+dissimilarity, and so using a larger proportion of site-pairs that are nearer to each other will improve the
+predictive accuracy for lower values of dissimilarity.  
+
+```{r}
+# Load the gdm library
+library(gdm)
+
+# read in example input data
+gdmExpData <- southwest
+
+# point to the data
+sppData <- gdmExpData[c(1,2,13,14)]
+sppData <- unique(sppData)
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+envTab <- unique(envTab)
+
+# Separate the data into training (85%) and testing sites (15%)
+test.sites <- envTab$site[sample.int(n=length(envTab$site), size=floor(0.15*length(envTab$site)))]
+sppData.train <- sppData[which(!sppData$site %in% test.sites),]
+sppData.test <- sppData[which(sppData$site %in% test.sites),]
+
+# create the gdm input tables
+sitePairTab.train <- formatsitepair(bioData=sppData.train,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+sitePairTab.test <- formatsitepair(bioData=sppData.test,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+# create a version of the training table where the site-pairs are sampled based on their
+# geographic separation (less sitepairs that are further apart)
+# First generate a geographic weighting
+geodist <- sqrt(((sitePairTab.train$s1.xCoord - sitePairTab.train$s2.xCoord)^2) + ((sitePairTab.train$s1.yCoord - sitePairTab.train$s2.yCoord)^2))
+
+# linear weighting
+weighting <- 1-(geodist/max(geodist))
+
+# Now subsample the site pairs
+# purely randomly for the unweighted data
+sitePairTab.train.unwt <- sitePairTab.train[sample.int(n=nrow(sitePairTab.train),
+size=floor(nrow(sitePairTab.train)/2)),]
+
+# and alternatively, using the geographic weighting to inform random selection of site pairs
+sitePairTab.train.wt <- sitePairTab.train[sample.int(n=nrow(sitePairTab.train),
+size=floor(nrow(sitePairTab.train)/2),
+prob=weighting),]
+
+# Fit a gdm to both the unweighted similarities and the geographically weighted similarities
+# Here we're not using geographic distance as a predictor, given we've used it to weight the
+# similarities
+mod.unwt <- gdm(sitePairTab.train.unwt, geo=FALSE)
+mod.wt <- gdm(sitePairTab.train.wt, geo=FALSE)
+
+# In terms of deviance explained in the training data, compare the model using random
+# site-pairs with that using more nearby site-pairs
+# random sitepairs - explained dissimilarity for the training data
+mod.unwt$explained
+
+# nearby sitepairs - explained dissimilarity for the training data
+mod.wt$explained
+
+# But let's assess how each model performs in predicting the more similar sitepairs, using
+# the testing data, let's calculate the mean absolute error for the sitepairs in the test
+# set that are <= 0.5 dissimilarity
+sitePairTab.test.lowest <- sitePairTab.test[which(sitePairTab.test$distance <= 0.5),]
+predicted.dissim.unwt <- predict(mod.unwt, sitePairTab.test.lowest)
+predicted.dissim.wt <- predict(mod.wt, sitePairTab.test.lowest)
+mae.unwt <- mean(abs(sitePairTab.test.lowest$distance - predicted.dissim.unwt))
+mae.wt <- mean(abs(sitePairTab.test.lowest$distance - predicted.dissim.wt))
+
+# In terms of mean absolute error in predicting lower levels of dissimilarity, using
+# independent cross-validation data:
+# random sitepairs - mean absolute error for dissimilarities < 0.5
+mae.unwt
+## [1] 0.02557344
+# nearby sitepairs - mean absolute error for dissimilarities < 0.5
+mae.wt
+## [1] 0.02458281
+# Also view as a boxplot
+err.unwt <- predicted.dissim.unwt - sitePairTab.test.lowest$distance
+err.wt <- predicted.dissim.wt - sitePairTab.test.lowest$distance
+error.dat <- data.frame('error' = c(err.unwt, err.wt),
+  'data.type' = c(rep('random_sitepairs',
+  times=length(err.unwt)),rep('closer_sitepairs',
+  times=length(err.wt))))
+boxplot(error~data.type,
+  error.dat,
+  ylim=c(min(error.dat$error)-0.01, max(error.dat$error)+0.01))
+```
+The resultant figure shows us the error in predicted dissimilarities where observed dissimilarity <0.5, using either randomly selected site-pairs, or sitepairs that are closer together geographically.
+
+## 2.7 Increasing the number of splines can influence model performance
+This example examines the implications of increasing the number of splines for a predictor when fitting a
+GDM. The outcomes are compared in terms of deviance explained for the data used to fit the model, and
+mean absolute error in predictions for independent cross-validation data.
+
+```{r}
+
+library(ggplot2)
+
+# load example data
+gdmExpData <- southwest
+
+## Set up site-pair table, environmental tabular data
+sppData <- gdmExpData[, c(1,2,13,14)]
+envTab <- gdmExpData[, c(2:ncol(gdmExpData))]
+
+# spt for modeling training
+spt.Train <- replicate(99, formatsitepair(sppData,
+2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab,
+sampleSites = 0.75), simplify = F)
+sitePairTab.test <- formatsitepair(sppData,
+2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab,
+sampleSites = 1) # use all (100%) data
+
+spt.Test <- lapply(spt.Train, function(x, sptIn){
+sitePairTab.test[which((rownames(sitePairTab.test) %in% rownames(x))==FALSE),]
+}, sptIn = sitePairTab.test)
+
+# setup splines
+nSplines <- seq(3, 10, by=1)
+
+#nPreds <- (ncol(sitePairTab.train)-6)/2
+nPreds <- (ncol(spt.Train[[1]])-6)/2
+modMetrics <- list()
+for(i in 1:length(nSplines)){
+    #print(i)
+    gdmSplines <- lapply(1:length(spt.Train), function(x,
+    trainDat,
+    testDat,
+    splineI){
+    # model fit to training spt
+    modTrain <- gdm(trainDat[[x]],
+    splines = rep(splineI, times=10))
+    # predict model to testing data
+    predTest <- predict(modTrain, testDat[[x]])
+    # mean absolute error
+    mae <- mean(abs(testDat[[x]]$distance - predTest))
+    return(c(modTrain$explained, mae))
+  }, trainDat=spt.Train, testDat=spt.Test, splineI=nSplines[i])
+  modMetrics[[i]] <- data.frame(nSplines=nSplines[i], do.call(rbind, gdmSplines))
+}
+modMetrics <- do.call(rbind, modMetrics)
+names(modMetrics) <- c("nSplines", "devExp", "mae")
+devExpTab <- aggregate(devExp~nSplines, data=modMetrics, FUN=quantile, prob=c(0.25, 0.5, 0.75))
+devExpTab <- data.frame(nSplines=devExpTab$nSplines, devExp=devExpTab$devExp)
+maeTab <- aggregate(mae~nSplines, data=modMetrics, FUN=quantile, prob=c(0.25, 0.5, 0.75))
+maeTab <- data.frame(nSplines=maeTab$nSplines, mae=maeTab$mae)
+```
+
+```{r}
+knitr::include_graphics("C:/Users/jacob/Box/GDM_workshop/analysis_splines_1.png")
+knitr::include_graphics("C:/Users/jacob/Box/GDM_workshop/analysis_splines_2.png")
+```
+This example shows that while model fit can appear to improve for the training data when more splines
+are used, the accuracy of the model in predicting dissimilarity for independent cross-validation data may
+sometimes decrease, due to over-fitting to the training data.
+
+## 2.8 Correlation between predictor variables and between site-pair predictors
+This example considers how the correlation between two predictor variables is related to the correlation
+between the site-pair differences for those two predictors, which is what is considered in GDM.
+
+```{r}
+# Set up site-pair table, environmental tabular data
+sppData <- gdmExpData[c(1,2,13,14)]
+envTab <- gdmExpData[c(2:ncol(gdmExpData))]
+
+# create sitepair table
+sitePairTab <- formatsitepair(bioData=sppData,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+# Calculate correlation coefficient for predictor variables
+env.preds <- c("awcA","phTotal","sandA","shcA","solumDepth","bio5","bio6","bio15","bio18","bio19")
+env.cor <- cor(envTab[,which(colnames(envTab) %in% env.preds)], method = "pearson")
+
+# Calculate correlation coefficients for site-pairs
+env.pair.dif <- matrix(0, ncol = length(env.preds), nrow = nrow(sitePairTab))
+colnames(env.pair.dif) <- paste0(env.preds,"_diff")
+for(i in 1:length(env.preds))
+{
+env.pair.dif[,i] <- abs(sitePairTab[,which(colnames(sitePairTab) == paste0("s1.",env.preds[i]))] -
+sitePairTab[,which(colnames(sitePairTab) == paste0("s2.",env.preds[i]))])
+} 
+# end for i
+env.dif.cor <- cor(env.pair.dif, method = "pearson")
+
+# compare the correlation coefficients for the predictors vs the differnece between the predictors
+plot(abs(env.cor),abs(env.dif.cor), xlab="Predictor correlation", ylab="Predictor-pair correlation")
+lines(c(0,1),c(0,1),lty=3)
+
+```
+The above figure demonstrates the correlation between the site-pair differences in the values of two predictors v.s. correlation between the predictor values of sites for two predictors.
+
+```{r}
+mean(env.cor)
+
+mean(env.dif.cor)
+
+cor.ratio <- mean(env.dif.cor/env.cor)
+cor.ratio # so site-pair differnces are about 3/4 those of the environmental predictor correlations
+```
+
+
+This example shows that there is not a simple relationship between the level of correlation in predictor
+variables, and the level of correlation in the site-pair difference between predictor variables. The level of correlation is typically lower when considering site-pairs than sites.
+
+## 2.9 Calculate AIC for a GDM
+
+The Akaike information criterion (AIC) is an estimator of prediction error and thereby relative quality of statistical models for a given set of data. Given a collection of models for the data, AIC estimates the quality of each model, relative to each of the other models. Thus, AIC provides a means for model selection.
+
+AIC is founded on information theory. When a statistical model is used to represent the process that generated the data, the representation will almost never be exact; so some information will be lost by using the model to represent the process. AIC estimates the relative amount of information lost by a given model: the less information a model loses, the higher the quality of that model.
+
+In estimating the amount of information lost by a model, AIC deals with the trade-off between the goodness of fit of the model and the simplicity of the model. In other words, AIC deals with both the risk of overfitting and the risk of underfitting.
+
+Calculating AIC () may be useful in refining a GDM, helping to select a parsimonious set of predictors and associated number of splines. This example creates a function to calculate AIC for a GDM, then demonstrates the use of the function.
+```{r}
+# Establish the AIC function
+AICFxn<-function(model){
+  mod<-glm((1-model$observed)~model$ecological,
+  family=binomial(link=log))
+  k<-length(which(model$coefficients>0))+1 # Number of coefficients, plus 1 for the model intercept
+  AIC<-(2*k)-(2*logLik(mod))
+  dev<-((mod$null.deviance-mod$deviance)/mod$null.deviance)*100
+  return(list(AIC,dev))
+} # end AICFxn
+# Use the AIC function on a gdm
+
+# reads in example input data
+gdmExpData <- southwest
+
+# Prepare the biological data
+sppTab <- gdmExpData[, c("species", "site", "Lat", "Long")]
+
+# Prepare the predictor data
+envTab <- gdmExpData[, c(2:ncol(gdmExpData))]
+
+# Prepare the site-pair table
+gdmTab <- formatsitepair(bioData=sppTab,
+bioFormat=2,
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envTab)
+
+# Fit a GDM
+gdm.1 <- gdm(data=gdmTab,
+geo=TRUE)
+
+# Get the AIC for the GDM
+gdm.1.aic <- AICFxn(gdm.1)
+gdm.1.aic[1]
+```
+
