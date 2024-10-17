@@ -1,6 +1,6 @@
 ## Generalized Dissimilarity Modeling Workshop 
 
-In summer of 2023, the Earth Observation and Remote Sensing Lab at UC Merced is invited identified researchers interested in spatial ecology to explore the statistical technique of generalized dissimilarity modeling through an intensive week-long workshop.   
+In the summer of 2023, the Earth Observation and Remote Sensing Lab at UC Merced invited identified researchers interested in spatial ecology to explore the statistical technique of generalized dissimilarity modeling through an intensive week-long workshop.   
 
 Modeling the compositional turnover of species, known as beta diversity, is often a challenging statistical process, due to the complexities of nonlinearity, as well as the violation of standard independence assumptions common to the statistical approaches we are used to. To overcome some of these challenges, we will explore generalized dissimilarity modeling (Ferrier et al. 2007), which has been developed to specifically account for these issues in modeling. 
 
