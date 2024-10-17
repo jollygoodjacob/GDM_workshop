@@ -1,0 +1,769 @@
+---
+title: "gdm_package_demo_pt3"
+author: "Jacob Nesslage"
+date: "2023-08-09"
+output: html_document
+---
+## 3.1 Fit model using raster data as predictors
+Spatially explicit predictor data to be transformed can be a raster stack or brick with one layer per predictor.If the model was fit with geographical distance and raster data are provided to the transform function, there is no need to provide x- or y-raster layers as these will be generated automatically . However, the character names of the x- and y-coordinates (e.g., “Lat” and “Long”) used to fit the model need to be provided.
+```{r}
+# As in Section 1, we first fit a gdm using raster layers as predictors
+# Load data from the gdm package
+gdmExpData <- southwest
+rastFile <- system.file("./extdata/swBioclims.grd", package="gdm")
+# create a raster stack
+envRast <- stack(rastFile)
+# Create a 'species list' data input using the gdm package data
+sppTab <- gdmExpData[, c("species", "site", "Lat", "Long")]
+# prepare the gdm input table, using rasters as predictors
+sitePairRast <- formatsitepair(bioData=sppTab,
+bioFormat=2,
+dist="jaccard",
+XColumn="Long",
+YColumn="Lat",
+sppColumn="species",
+siteColumn="site",
+predData=envRast)
+
+# Remove any site-pairs containing NAs for the extracted raster-based predictors
+sitePairRast <- na.omit(sitePairRast)
+
+# fit the GDM
+gdmRastMod <- gdm(data=sitePairRast,
+geo=TRUE)
+
+# Generate transformed predictor rasters, based on the raw raster predictor layers
+# and the fitted gdm
+transRasts <- gdm.transform(model=gdmRastMod,
+data=envRast)
+```
+
+## 3.2 Transform raster data and plot beta diversity
+
+Site-pair based biological distances are difficult to visualize. However, if the transform function is applied to rasters, the resulting multi-dimensional biological space can be mapped to reveal biological patterns in geographic space. Alternatively, a biplot can be used to depict where sites fall relative to each other in biological space and therefore how sites differ in predicted biological composition. In either case, the multidimensional biological space can be most effectively visualized by taking a PCA to reduce dimensionality and assigning the first three components to an RGB color palette.
+
+```{r}
+# Get the data from the gdm transformed rasters as a table
+rastDat <- stats::na.omit(getValues(transRasts))
+# The PCA can be fit on a sample of grid cells if the rasters are large
+rastDat <- sampleRandom(transRasts, 50000)
+# perform the principle components analysis
+pcaSamp <- prcomp(rastDat)
+# Predict the first three principle components for every cell in the rasters
+# note the use of the 'index' argument
+pcaRast <- predict(transRasts, pcaSamp, index=1:3)
+# scale the PCA rasters to make full use of the colour spectrum
+pcaRast[[1]] <- (pcaRast[[1]]-pcaRast[[1]]@data@min) /
+(pcaRast[[1]]@data@max-pcaRast[[1]]@data@min)*255
+pcaRast[[2]] <- (pcaRast[[2]]-pcaRast[[2]]@data@min) /
+(pcaRast[[2]]@data@max-pcaRast[[2]]@data@min)*255
+pcaRast[[3]] <- (pcaRast[[3]]-pcaRast[[3]]@data@min) /
+(pcaRast[[3]]@data@max-pcaRast[[3]]@data@min)*255
+# Plot the three PCA rasters simultaneously, each representing a different colour
+# (red, green, blue)
+plotRGB(pcaRast, r=1, g=2, b=3)
+summary(pcaSamp)
+
+```
+
+## 3.3 Using GDM transformed grids to predict the similarity between two locations
+This example demonstrates how the GDM predicted dissimilarity between two locations can be obtained
+from the spatial model-transformed predictor grids.
+
+```{r}
+# Choose two locations of interest
+focal.pt.1 <- c(122.0, -31.0) # semiarid woodland
+focal.pt.2 <- c(116.0, -34.0) # coastal temperate forest
+focal.pts <- rbind(focal.pt.1, focal.pt.2)
+# Extract the transformed environmental values for these two focal locations
+focal.trans <- extract(transRasts, focal.pts)
+# Calculate the predicted similarity between them
+ecol.dist <- sum(abs(focal.trans[1,] - focal.trans[2,]))
+similarity.1.2 <- (exp(-1 * (gdmRastMod$intercept + ecol.dist)))
+# The predictedimilarity between the two locations is:
+similarity.1.2
+```
+
+## 3.4 Predicting the similarity of all locations to a specified location
+
+This example shows how the similarity of all locations to a specified focal location of interest can be predicted and mapped.
+
+```{r}
+# Choose some locations of interest
+focal.pt.1 <- c(122.0, -31.0) # semiarid woodland
+focal.pt.2 <- c(116.0, -34.0) # coastal temperate forest
+focal.pts <- rbind(focal.pt.1, focal.pt.2)
+
+# Extract the transformed environmental values for these focal locations
+focal.trans <- extract(transRasts, focal.pts)
+
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# now calculate the similarity of all other grid cells to each of these focal locations
+similarity.focal.pt.1 <- rep(0, length=nrow(Trans.env.table))
+similarity.focal.pt.2 <- rep(0, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+{
+  ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] - focal.trans[1,]))
+  similarity.focal.pt.1[i.cell] <- exp(-1 * (gdmRastMod$intercept + ecol.dist.1))
+  ecol.dist.2 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] - focal.trans[2,]))
+  similarity.focal.pt.2[i.cell] <- exp(-1 * (gdmRastMod$intercept + ecol.dist.2))
+} # end for i.cell
+
+# Format the similarities into a raster an plot them
+
+# First location
+focal.pt.1.ras <- raster(transRasts,layer=1)
+focal.pt.1.ras <- rasterize(Trans.env.table[,c(1:2)], focal.pt.1.ras,
+field=similarity.focal.pt.1)
+plot(focal.pt.1.ras,
+col = colorRampPalette(c("azure2", "darkgreen"))(100),
+zlim=c(0,1),
+legend.args = list(text = 'Similarity'))
+points(x=focal.pts[1,1],y=focal.pts[1,2])
+
+# First location
+focal.pt.2.ras <- raster(transRasts,layer=2)
+focal.pt.2.ras <- rasterize(Trans.env.table[,c(1:2)], focal.pt.2.ras,
+field=similarity.focal.pt.2)
+plot(focal.pt.2.ras,
+col = colorRampPalette(c("azure2", "darkgreen"))(100),
+zlim=c(0,1),
+legend.args = list(text = 'Similarity'))
+points(x=focal.pts[2,1],y=focal.pts[2,2])
+```
+## 3.5 Predicting the mean similarity within the neighbourhood around each location
+
+This example demonstrates how the average similarity in the neighbourhood around each location can be
+predicted and mapped. Note that different outcomes will be achieved when considering neighbourhoods of
+different size (here we use 15km radius).
+```{r}
+# specify the radius
+rad <- 0.10 # this distance is in geographic units (degrees) and equates to about 15km
+
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# Calculate the similarity of all other grid cells to each of these focal locations
+# NB - This loop takes a couple of minutes
+mean.similarity.radius <- rep(0, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+{
+# Check if this cell has data
+  if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+    {#calculate the distance of all the cells to the focal cell
+    cells.dist <- sqrt(((Trans.env.table[i.cell,1] - Trans.env.table[,1])^2) +
+                         ((Trans.env.table[i.cell,2] - Trans.env.table[,2])^2))
+    # Grab the cells within the specified radius of the focal cell
+    rad.cells <- which(cells.dist <= rad)
+    # loop through the neighbouring cells, calculate similarity, add it to the tally
+    for(j.cell in 1:length(rad.cells))
+      {
+      ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+      Trans.env.table[rad.cells[j.cell],c(3:ncol(Trans.env.table))]))
+      mean.similarity.radius[i.cell] <- mean.similarity.radius[i.cell] +
+      (exp(-1 * (gdmRastMod$intercept + ecol.dist.1)))
+    } # end for j.cells
+    
+    # Finish by dividing by the number of neighbouring cells to get the mean
+  mean.similarity.radius[i.cell] <- mean.similarity.radius[i.cell] / length(rad.cells)
+  } # end if(!is.na())
+} # end for i.cell
+
+# Format the similarities into a raster an plot them
+mnsim.ras <- raster(transRasts,layer=1)
+mnsim.ras <- rasterize(Trans.env.table[,c(1:2)], mnsim.ras, field=mean.similarity.radius)
+plot(mnsim.ras,
+col = colorRampPalette(c("red", "blue"))(100),
+zlim=c(0.5,0.7),
+legend.args = list(text = 'Similarity'))
+```
+The predicted similarity within the neighbourhood around each location. Areas on the map that have lower similarity to the neighbouring locations are in places where there is predicted to be greater biological turnover.
+
+## 3.6 Predicting the uniqueness of each location (similarity to the region)
+
+The biological uniqueness of each location can be predicted by calculating the mean similarity between that
+location and a random sample of all the locations across the region.
+
+```{r}
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# specify the number of randomly selected reference cells (0.5% of the region)
+n.ref <- floor(0.005 * length(!is.na(Trans.env.table[,ncol(Trans.env.table)])))
+
+# randomly select this number of reference cells
+ref.cells <- sample.int(length(!is.na(Trans.env.table[,ncol(Trans.env.table)])),
+size = n.ref, replace = FALSE)
+
+#Calculate the similarity of each grid cell to the randomly selected reference cells
+
+# NB - This loop takes a couple of minutes
+mean.similarity.region <- rep(0, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+{
+  # Check if this cell has data
+  if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+  {
+    # loop through the reference cells, calculate similarity, add it to the tally
+    for(j.cell in 1:length(ref.cells))
+    {
+      ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+      Trans.env.table[ref.cells[j.cell],c(3:ncol(Trans.env.table))]))
+      mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] +
+      (exp(-1 * (gdmRastMod$intercept + ecol.dist.1)))
+    } # end for j.cells
+    # Finish by dividing by the number of neighbouring cells to get the mean
+    mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] / length(ref.cells)
+  } # end if(!is.na())
+} # end for i.cell
+# Format the similarities into a raster an plot them
+mnsim.ras <- raster(transRasts,layer=1)
+mnsim.ras <- rasterize(Trans.env.table[,c(1:2)],
+mnsim.ras,
+field=mean.similarity.region)
+plot(mnsim.ras,
+col = colorRampPalette(c("skyblue", "black"))(100),
+zlim=c(0,0.5),
+legend.args = list(text = 'Similarity'))
+```
+The predicted uniqueness of each location. Areas with lower average similarity to the region are
+more unique.
+
+## 3.7 Survey gap anlysis - predicted similarity to survey locations
+
+This example demonstrates a survey gap analysis, where we predict the average similarity of each location to the set of locations that have been surveyed. Here survey gap assessment is demonstrated using the locations of the data used to fit the model.
+
+```{r}
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# specify the locations used to fit the model
+ref.coords <- unique(cbind(sppTab$Long, sppTab$Lat))
+
+# extract the gdm transformed predictor values for those locations
+ref.Trans.env.table <- extract(transRasts,ref.coords)
+
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# specify the locations used to fit the model
+ref.coords <- unique(cbind(sppTab$Long, sppTab$Lat))
+
+# extract the gdm transformed predictor values for those locations
+ref.Trans.env.table <- extract(transRasts,ref.coords)
+ref.Trans.env.table <- ref.Trans.env.table[complete.cases(ref.Trans.env.table),]
+
+#Calculate the similarity of each grid cell to the survey cells
+
+# NB - This loop takes a couple of minutes
+mean.similarity.region <- rep(0, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+  {
+  # Check if this cell has data
+  if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+    {
+    # loop through the reference cells, calculate similarity, add it to the tally
+    for(j.cell in 1:nrow(ref.Trans.env.table))
+    {
+      ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+      ref.Trans.env.table[j.cell,]))
+      mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] +
+      (exp(-1 * (gdmRastMod$intercept + ecol.dist.1)))
+    } # end for j.cells
+  # Finish by dividing by the number of neighbouring cells to get the mean
+  mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] / nrow(ref.Trans.env.table)
+  } # end if(!is.na())
+} # end for i.cell
+
+# Format the similarities into a raster and plot them
+mnsim.ras <- raster(transRasts,layer=1)
+mnsim.ras <- raster::rasterize(x=Trans.env.table[,c(1:2)],mnsim.ras,field=mean.similarity.region) #need to find solution here
+plot(mnsim.ras,
+col = heat.colors(100),
+zlim=c(0,0.3),
+legend.args = list(text = 'Similarity'))
+points(x=ref.coords[,1], y=ref.coords[,2])
+```
+
+## 3.8 Protected area representativeness - predicted similarity to protected areas
+
+This example demonstrates how GDM predictions can be used in assessing how well the protected areas in a
+region represent the biological diversity. It calculates the similarity of each location to a sample of locations that are protected, accounting for the natural uniqueness of each location.
+
+```{r}
+library(sp)
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# specify some simple polygons approximating some of the larger protected areas in the region
+pa.1 <- rbind(c(116.542, -34.876), c(117.410, -34.876), c(117.410, -34.569),
+c(116.542, -34.569), c(116.542, -34.876))
+pa.2 <- rbind(c(117.700, -34.468), c(118.381, -34.468), c(118.381, -34.321),
+c(117.700, -34.321), c(117.700, -34.468))
+pa.3 <- rbind(c(119.950, -33.841), c(119.950, -33.970), c(119.232, -33.970),
+c(119.232, -33.841), c(119.950, -33.841))
+pa.4 <- rbind(c(118.862, -33.701), c(118.862, -33.445), c(119.200, -33.445),
+c(119.200, -33.701), c(118.862, -33.701))
+pa.5 <- rbind(c(121.911, -32.288), c(121.911, -32.740), c(123.485, -32.740),
+c(123.485, -32.288), c(121.911, -32.288))
+pa.6 <- rbind(c(123.244, -33.931), c(123.244, -33.287), c(124.063, -33.287),
+c(124.063, -33.931), c(123.244, -33.931))
+pa.7 <- rbind(c(119.637, -31.485), c(119.637, -32.038), c(120.042, -32.038),
+c(120.042, -31.485), c(119.637, -31.485))
+pa.8 <- rbind(c(119.405, -29.536), c(119.405, -30.488), c(119.909, -30.488),
+c(119.909, -29.536), c(119.405, -29.536))
+pa.9 <- rbind(c(117.834, -29.791), c(117.834, -30.228), c(118.496, -30.228),
+c(118.496, -29.791), c(117.834, -29.791))
+pa.10 <- rbind(c(116.143, -31.558), c(116.143, -31.661), c(116.280, -31.661),
+c(116.280, -31.558), c(116.143, -31.558))
+pa.11 <- rbind(c(115.661, -31.366), c(115.661, -31.483), c(115.832, -31.483),
+c(115.832, -31.366), c(115.661, -31.366))
+pa.12 <- rbind(c(115.603, -31.039), c(115.603, -31.173), c(115.729, -31.173),
+c(115.729, -31.039), c(115.603, -31.039))
+pa.13 <- rbind(c(114.975, -29.556), c(114.975, -30.016), c(115.080, -30.016),
+c(115.080, -29.556), c(114.975, -29.556))
+pa.14 <- rbind(c(114.711, -26.652), c(114.711, -27.289), c(115.535, -27.289),
+c(115.535, -26.652), c(114.711, -26.652))
+pa.15 <- rbind(c(123.136, -30.236), c(123.136, -30.564), c(123.890, -30.564),
+c(123.890, -30.236), c(123.136, -30.236))
+pa.16 <- rbind(c(124.671, -29.338), c(124.671, -29.713), c(125.413, -29.713),
+c(125.413, -29.338), c(124.671, -29.338))
+pa.17 <- rbind(c(124.014, -27.789), c(124.014, -28.225), c(124.659, -28.225),
+c(124.659, -27.789), c(124.014, -27.789))
+pa.18 <- rbind(c(115.425, -34.073), c(115.425, -34.259), c(115.767, -34.259),
+c(115.767, -34.073), c(115.425, -34.073))
+# Create a multipolygon object using the sp library
+pa.sply = SpatialPolygons(list(Polygons(list(Polygon(pa.1)), ID="a"),
+  Polygons(list(Polygon(pa.2)), ID="b"),
+  Polygons(list(Polygon(pa.3)), ID="c"),
+  Polygons(list(Polygon(pa.4)), ID="d"),
+  Polygons(list(Polygon(pa.5)), ID="e"),
+  Polygons(list(Polygon(pa.6)), ID="f"),
+  Polygons(list(Polygon(pa.7)), ID="g"),
+  Polygons(list(Polygon(pa.8)), ID="h"),
+  Polygons(list(Polygon(pa.9)), ID="i"),
+  Polygons(list(Polygon(pa.10)), ID="j"),
+  Polygons(list(Polygon(pa.11)), ID="k"),
+  Polygons(list(Polygon(pa.12)), ID="l"),
+  Polygons(list(Polygon(pa.13)), ID="m"),
+  Polygons(list(Polygon(pa.14)), ID="n"),
+  Polygons(list(Polygon(pa.15)), ID="o"),
+  Polygons(list(Polygon(pa.16)), ID="p"),
+  Polygons(list(Polygon(pa.17)), ID="q"),
+  Polygons(list(Polygon(pa.18)), ID="r")),
+  proj4string=crs(transRasts))
+
+# extract values for the cells in the protected area polygons
+ref.Trans.env.table <- extract(transRasts, pa.sply)
+ref.Trans.env.table <- do.call(rbind, ref.Trans.env.table)
+ref.Trans.env.table <- ref.Trans.env.table[complete.cases(ref.Trans.env.table),]
+
+# randomly subsample these locations within the protected areas, to make the analysis faster
+ref.Trans.env.table <- ref.Trans.env.table[sample(nrow(ref.Trans.env.table), 300),]
+
+# Select a random sample of cells across the region, to use in standardising
+# mean similarity to protected areas
+# Specify the number of randomly selcted reference cells
+ref.cells <- sample.int(nrow(Trans.env.table), size = nrow(ref.Trans.env.table),
+replace = FALSE)
+# Calculate the similarity of each grid cell to the cells in the protected areas as well as
+# the mean similarity of each cell to the whole region, to achieve a suitable estimate of
+# representativenes accounting for uniqueness.
+
+# NB - This loop takes a couple of minutes
+mean.similarity.pa <- rep(0, length=nrow(Trans.env.table))
+mean.similarity.region <- rep(0, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+{
+# Check if this cell has data
+  if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+  {
+  # Protected areas
+  # loop through the reference cells, calculate similarity, add it to the tally
+  for(j.cell in 1:nrow(ref.Trans.env.table))
+    {
+    ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+    ref.Trans.env.table[j.cell,]))
+    mean.similarity.pa[i.cell] <- mean.similarity.pa[i.cell] +
+    (exp(-1 * (gdmRastMod$intercept + ecol.dist.1)))
+    } # end for j.cells
+    # Whole Region
+    # loop through the reference cells, calculate similarity, add it to the tally
+    for(j.cell in 1:length(ref.cells))
+    {
+    ecol.dist.2 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+    Trans.env.table[ref.cells[j.cell],c(3:ncol(Trans.env.table))]))
+    mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] +
+    (exp(-1 * (gdmRastMod$intercept + ecol.dist.2)))
+    } # end for j.cells
+  # Finish by dividing by the number of sample cells to get the mean
+  mean.similarity.pa[i.cell] <- mean.similarity.pa[i.cell] / nrow(ref.Trans.env.table)
+  mean.similarity.region[i.cell] <- mean.similarity.region[i.cell] / length(ref.cells)
+  } # end if(!is.na())
+} # end for i.cell
+```
+
+```{r}
+# Format the similarities into a raster an plot them
+# the similarity to the protected areas
+pasim.ras <- raster(transRasts,layer=1)
+pasim.ras <- rasterize(Trans.env.table[,c(1:2)], pasim.ras, field=mean.similarity.pa)
+# the similarity to the region
+mnsim.ras <- raster(transRasts,layer=1)
+mnsim.ras <- rasterize(Trans.env.table[,c(1:2)], mnsim.ras, field=mean.similarity.region)
+# Calculate relative similarity
+pa.representativeness.ras <- pasim.ras / mnsim.ras
+# plot it
+plot(pa.representativeness.ras,
+col = colorRampPalette(c("red", "yellow","blue"))(100),
+zlim=c(0,2),
+legend.args = list(text = 'Representativenss'))
+plot(pa.sply, add=TRUE, border='black', lwd=2)
+```
+
+
+Protected area representativeness. Areas with higher values are better represented by the protected
+areas (shown as polygons) than areas with lower values.
+
+## 3.9 Classifying and mapping community types
+This example shows how the GDM predicted spatial layers can be used to generate ecological classifications.
+
+```{r}
+# Put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+# specify the number of random samples of grid cells to use in the clustering proceedure
+n.sub <- 500
+# specify the number of community types to derive
+n.cat <- 100
+# Then take a random sample of grid cells from the transformed environment data
+sub.Trans.env <- Trans.env.table[sample(nrow(Trans.env.table), n.sub),]
+# Then loop through and determine the predicted dissimilarity between each pair of
+# cells in the random set
+sub.dissimilarity <- matrix(0, n.sub, n.sub)
+colnames(sub.dissimilarity)<-c(1:n.sub)
+rownames(sub.dissimilarity)<-c(1:n.sub)
+for(i.col in 1:(n.sub-1))
+{
+  for(i.row in (i.col+1):n.sub)
+  {
+    ecol.dist <- sum(abs(sub.Trans.env[i.col,c(3:ncol(sub.Trans.env))] -
+    sub.Trans.env[i.row,c(3:ncol(sub.Trans.env))]))
+    sub.dissimilarity[i.row,i.col] <- 1 - exp(-1 * (gdmRastMod$intercept + ecol.dist))
+    sub.dissimilarity[i.col,i.row] <- sub.dissimilarity[i.row,i.col]
+  } # end for i.row
+} # end for i.col
+# Now apply heirachical clustering to the subsample dissimilarity matrix
+sub.dissimilarity<-as.dist(sub.dissimilarity)
+class.results<-hclust(sub.dissimilarity, method = "ward.D")
+class.membership <- cutree(class.results, k = n.cat)
+# Now run through all grid cells, and allocate them to the class of the
+# most similar cell in the training set
+# takes 5 mins with 500 samples
+cell.class <- rep(1, length=nrow(Trans.env.table))
+for(i.cell in 1:nrow(Trans.env.table))
+{
+  max.similarity <- 0
+  i.cell.class <- 1
+  for(i.sub in 1:n.sub)
+  {
+  ecol.dist <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+  sub.Trans.env[i.sub,c(3:ncol(sub.Trans.env))]))
+  similarity <- exp(-1 * (gdmRastMod$intercept + ecol.dist))
+  if(similarity > max.similarity)
+    {
+    max.similarity <- similarity
+    i.cell.class <- class.membership[i.sub]
+    } # end if
+  } # end for i.sub
+  cell.class[i.cell] <- i.cell.class
+} # end for i.cell
+# Convert the results to a raster
+gdm.class.ras <- raster(transRasts,layer=1)
+gdm.class.ras <- rasterize(Trans.env.table[,c(1:2)],
+gdm.class.ras,
+field=cell.class)
+# Plot the community classes ~~~~~~~~~~~~~
+plot(gdm.class.ras)
+```
+
+Predicted ecological types - noting that the colour of each class has no meaning in this case.
+
+
+Next we will consider the similarity of classes to each other in allocating colours on the map.
+
+```{r}
+# Generate a matrix of dissimilarities between classes
+class.Trans<-as.data.frame(cbind(class.membership,sub.Trans.env))
+class.mean <- aggregate(class.Trans, list(Class=class.membership),mean)
+class.mean <- class.mean[,-c(1:4)]
+class.dissimilarity <- matrix(0, n.cat, n.cat)
+colnames(class.dissimilarity)<-c(1:n.cat)
+rownames(class.dissimilarity)<-c(1:n.cat)
+for(i.col in 1:(n.cat-1))
+{
+  for(i.row in (i.col+1):n.cat)
+  {
+  ecol.dist <- sum(abs(class.mean[i.col,]-class.mean[i.row,]))
+  class.dissimilarity[i.row,i.col] <- 1 - exp(-1 * (gdmRastMod$intercept + ecol.dist))
+  class.dissimilarity[i.col,i.row] <- class.dissimilarity[i.row,i.col]
+  } # end for i.row
+} # end for i.col
+
+# ordinate the class-class dissimilarity matrix using multi-dimensional scaling
+Class.MDS <- cmdscale(class.dissimilarity, eig = TRUE, k = 3)
+
+# allocate each grid cell with the scale value for the three dimensions of its class
+cell.Scale <- matrix(NA, nrow(Trans.env.table), 3)
+
+for(i.cell in 1:nrow(Trans.env.table))
+{
+  cell.Scale[i.cell,] <- Class.MDS$points[cell.class[i.cell],]
+} # end for i.cell
+
+# Create a table with coordinates
+cell.Scale.norm <- (cell.Scale-min(cell.Scale))/(max(cell.Scale)-min(cell.Scale))
+ras.dat <- cbind(Trans.env.table[,c(1,2)],cell.Scale.norm)
+colnames(ras.dat) <- c('x','y','r', 'g', 'b')
+ras.dat <- ras.dat[complete.cases(ras.dat),]
+ras.dat <- as.data.frame(ras.dat)
+# convert the data to raster
+gdm.cls.1.ras <- raster(transRasts,layer=1)
+gdm.cls.1.ras <- rasterize(Trans.env.table[,c(1:2)],gdm.cls.1.ras,field=ras.dat$r)
+gdm.cls.2.ras <- raster(transRasts,layer=1)
+gdm.cls.2.ras <- rasterize(Trans.env.table[,c(1:2)],gdm.cls.2.ras,field=ras.dat$g)
+gdm.cls.3.ras <- raster(transRasts,layer=1)
+gdm.cls.3.ras <- rasterize(Trans.env.table[,c(1:2)],gdm.cls.3.ras,field=ras.dat$b)
+gdm.cls.stack <- stack(gdm.cls.1.ras, gdm.cls.2.ras, gdm.cls.3.ras)
+# plot the data
+plotRGB(gdm.cls.stack, stretch="lin")
+```
+Predicted ecological types: classes that are more similar have more similar colour.
+
+
+## 3.10 Expected species persistence given changes in habitat condition
+Here we demonstrate how the GDM spatial predictions can be combined with information on the habitat
+condition of each location to estimate the expected level of species persistence, given habitat loss and
+degradation.
+
+```{r}
+# put the values from the transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# Create data on habitat condition for the region
+# specify a simple polygon indicating where habitat loss has occurred
+losthab.1 <- rbind(c(116.6, -33.9), c(120.2, -33.4), c(116.4, -29.5), c(116.6, -33.9))
+losthab.2 <- rbind(c(120.4, -33.7), c(121.8, -32.8), c(122.4, -33.7), c(120.4, -33.7))
+losthab.3 <- rbind(c(116.0, -32.2), c(115.0, -29.9), c(116.0, -29.8), c(116.0, -32.2))
+losthab.sply <- SpatialPolygons(list(Polygons(list(Polygon(losthab.1)), ID="a"),
+Polygons(list(Polygon(losthab.2)), ID="b"),
+Polygons(list(Polygon(losthab.3)), ID="c")),
+proj4string=crs(transRasts))
+
+# Create a habitat condition raster based on the polygons: 1=intact, 0=lost
+cond.ras <- transRasts[[1]]
+cond.ras[!is.na(cond.ras)] <- 1
+cond.ras <- rasterize(losthab.sply, cond.ras, field=0, update=TRUE)
+
+# Extract the habitat condition data to a table
+cond.table <- extract(cond.ras, Trans.env.table[,c(1,2)])
+cond.table <- data.frame('x' = Trans.env.table[,1],
+                         'y' = Trans.env.table[,2],
+                         'cond' = cond.table)
+
+# Select a random sample of cells across the region, to use in comparing each cell to
+ref.cells <- sample.int(nrow(Trans.env.table), size = 500, replace = FALSE)
+
+# Calculate the expected species persistence
+# NB - This loop takes a couple of minutes
+proportion.persisting <- rep(0, length=nrow(Trans.env.table))
+Numerator <- 0
+Denominator <- 0
+
+for(i.cell in 1:nrow(Trans.env.table))
+{
+# Check if this cell has data
+if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+{
+# initialise the similarity aggregators
+sum.similarity.condition <- 0
+sum.similarity.pristine <- 0
+# loop through the reference cells, calculate similarity, add it to the tally
+  for(j.cell in 1:length(ref.cells))
+  {
+  ecol.dist.1 <- sum(abs(Trans.env.table[i.cell,c(3:ncol(Trans.env.table))] -
+  Trans.env.table[ref.cells[j.cell],c(3:ncol(Trans.env.table))]))
+  similarity.ij <- (exp(-1 * (gdmRastMod$intercept + ecol.dist.1)))
+  sum.similarity.condition <- sum.similarity.condition +
+  (cond.table$cond[ref.cells[j.cell]] * similarity.ij)
+  sum.similarity.pristine <- sum.similarity.pristine + similarity.ij
+  } # end for j.cells
+  # Finish by dividing the sum similarity condition by the sum similarity pristine
+  # and take to the power of z (here = 0.25) for species-area conversion
+  proportion.persisting[i.cell] <- (sum.similarity.condition / sum.similarity.pristine) ^ 0.25
+  cell.weight <- 1 / sum.similarity.pristine
+  Numerator <- Numerator + (proportion.persisting[i.cell] * cell.weight)
+  Denominator <- Denominator + cell.weight
+  } # end if(!is.na())
+} # end for i.cell
+# Calculate the expected proportion of species persisting across the whole region
+Regional.Proportion.Persistence <- Numerator / Denominator
+# The proportion of species originally occuring in the region that are expected to
+# persist indefinitely given habitat loss =
+round(Regional.Proportion.Persistence, digits=3)
+```
+
+```{r}
+## Format the cell-based persistence values into a raster and plot them
+pers.ras <- raster(transRasts,layer=1)
+pers.ras <- rasterize(Trans.env.table[,c(1:2)], pers.ras, field=proportion.persisting)
+plot(pers.ras,
+col = colorRampPalette(c("red", "yellow","green"))(100),
+zlim=c(0.9,1.0),
+legend.args = list(text = 'Persistence'))
+```
+
+## 3.11 Considering climate change
+The next set of examples demonstrate use of GDM to undertake biodiversity assessments associated with
+potential future climate change. To implement these analyses, we first need to generate GDM predictions(transformed layers) for future climates.
+
+```{r}
+futRasts <- envRast
+##reduce winter precipitation by 25% & increase temps
+futRasts[[3]] <- futRasts[[3]]*0.75
+futRasts[[4]] <- futRasts[[4]]+2
+futRasts[[5]] <- futRasts[[5]]+3
+# create model transformed env layers (predictions) for the climate change env layers
+transRasts.fut <- gdm.transform(model=gdmRastMod,
+data=futRasts)
+```
+
+The simplest climate change analysis with GDM is to predict the expected change (turnover) for each
+location, from current climate to a future climate
+
+```{r}
+# For this analysis, we simply need to use the 'predict' function in the gdm package,
+# specifying the 'predRasts' argument, and the 'time' argument
+timePred <- predict(object=gdmRastMod,
+data=envRast,
+time=T,
+predRasts=futRasts)
+plot(timePred)
+```
+
+## 2.14 Identifying potential climate change refugia
+This example uses GDM predictions for both the current and future climate to assess possible areas of refugia under climate change.
+
+```{r}
+# put the values from the current climate transformed layers in a table for easy analysis
+Trans.env.table <- as.matrix(transRasts)
+col.longs<-xFromCol(transRasts)
+row.lats<-yFromRow(transRasts)
+Cell_Long<-rep(col.longs, times=nrow(transRasts))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts), times=1)
+Trans.env.table<-cbind(Cell_Long, Cell_Lat, Trans.env.table)
+Trans.env.table <- Trans.env.table[complete.cases(Trans.env.table),]
+
+# put the values from the future transformed layers in a table for easy analysis
+Trans.env.table.fut <- as.matrix(transRasts.fut)
+col.longs<-xFromCol(transRasts.fut)
+row.lats<-yFromRow(transRasts.fut)
+Cell_Long<-rep(col.longs, times=nrow(transRasts.fut))
+Cell_Lat<-rep(row.lats, each=ncol(transRasts.fut), times=1)
+Trans.env.table.fut<-cbind(Cell_Long, Cell_Lat, Trans.env.table.fut)
+Trans.env.table.fut <- Trans.env.table.fut[complete.cases(Trans.env.table.fut),]
+
+# Run the refugia analysis
+# specify the radius to use in assessing refugia
+rad <- 0.15 # about 15km
+# Calculate the similarity of all other grid cells to each of these focal locations
+# NB - This loop takes a couple of minutes
+refugia <- rep(0, length=nrow(Trans.env.table))
+
+for(i.cell in 1:nrow(Trans.env.table))
+{
+  # Check if this cell has data
+  if(!is.na(Trans.env.table[i.cell,ncol(Trans.env.table)]))
+  {
+    # calculate the distance of all the cells to the focal cell
+    cells.dist <- sqrt(((Trans.env.table[i.cell,1] - Trans.env.table[,1])ˆ2) +
+    ((Trans.env.table[i.cell,2] - Trans.env.table[,2])ˆ2))
+    # Grab the cells within the specified radius of the focal cell
+    rad.cells <- which(cells.dist <= rad)
+    # set up the catching objects
+    sum.s.iFut.jPres <- 0
+    sum.s.iFut.jFut <- 0
+  # loop through the neighbouring cells, calculate the two similarities, add them to the tally
+    for(j.cell in 1:length(rad.cells))
+    {
+      ecol.dist.1 <- sum(abs(Trans.env.table.fut[i.cell,c(3:ncol(Trans.env.table.fut))] 
+                             - Trans.env.table.fut[j.cell,c(3:ncol(Trans.env.table.fut))]
+      sum.s.iFut.jPres <- sum.s.iFut.jPres + (exp(-1 * ecol.dist.1))
+      ecol.dist.2 <- sum(abs(Trans.env.table.fut[i.cell,c(3:ncol(Trans.env.table.fut))] 
+                             - - Trans.env.table.fut[j.cell,c(3:ncol(Trans.env.table.fut))]
+      sum.s.iFut.jFut <- sum.s.iFut.jFut + (exp(-1 * ecol.dist.2))
+    } # end for j.cells
+  # Finish by dividing by the number of neighbouring cells to get the mean
+  refugia[i.cell] <- sum.s.iFut.jPres / sum.s.iFut.jFut
+  } # end if(!is.na())
+} # end for i.cell
+# Format the cell-based refugia values into a raster and plot them
+refugia.ras <- raster(transRasts,layer=1)
+refugia.ras <- rasterize(Trans.env.table[,c(1:2)], refugia.ras, field=refugia)
+plot(refugia.ras,
+col = colorRampPalette(c("bisque", "green","darkblue"))(100),
+zlim=c(0.25,1.06),
+legend.args = list(text = 'refugia'))
+
+```
+
